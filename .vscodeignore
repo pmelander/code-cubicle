@@ -1,0 +1,27 @@
+.vscode/**
+.vscode-test/**
+src/**
+webview/**/*.ts
+node_modules/**
+.gitignore
+tsconfig.json
+webview/tsconfig.json
+esbuild.mjs
+eslint.config.mjs
+**/*.map
+
+# Source sprite packs — only webview/sprites/ is needed at runtime.
+# (Modern tiles_Free is non-commercial-license; must not ship in the .vsix.)
+Modern tiles_Free/**
+SuperRetroWorld_CharacterPack_Full/**
+**/*.log
+AGENTS.md
+CLAUDE.md
+ving.svg
+
+# Dev/runtime artifacts for the terminal-CLI hook capture — these belong in the
+# developer's workspace, never in the shipped extension. activity.jsonl holds
+# captured session data (paths, commands, tool I/O); settings.local.json holds
+# local permissions. The watcher's runtime code is bundled into dist/.
+.claude/**
+.codecubicle/**

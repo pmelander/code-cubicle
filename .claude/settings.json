@@ -1,0 +1,22 @@
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [{ "type": "command", "command": "node .codecubicle/capture.cjs" }] }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "node .codecubicle/capture.cjs" }] }
+    ],
+    "SubagentStart": [
+      { "hooks": [{ "type": "command", "command": "node .codecubicle/capture.cjs" }] }
+    ],
+    "SubagentStop": [
+      { "hooks": [{ "type": "command", "command": "node .codecubicle/capture.cjs" }] }
+    ],
+    "PreToolUse": [
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "node .codecubicle/capture.cjs" }] }
+    ],
+    "PostToolUse": [
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "node .codecubicle/capture.cjs" }] }
+    ]
+  }
+}

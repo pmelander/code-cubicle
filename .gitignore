@@ -1,0 +1,17 @@
+node_modules/
+dist/
+*.vsix
+.vscode-test/
+out/
+.codecubicle/activity.jsonl
+
+# Local-only Claude Code config (per-machine permissions)
+.claude/settings.local.json
+
+# Captured calibration logs — contain real internal session data; keep local only
+*.log
+
+# Licensed sprite source packs — not redistributed publicly.
+# (Modern tiles_Free is non-commercial; derived PNGs live in webview/sprites/.)
+Modern tiles_Free/
+SuperRetroWorld_CharacterPack_Full/
