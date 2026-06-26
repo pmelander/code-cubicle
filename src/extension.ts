@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
+import * as path from "path";
 import { CubiclePanel } from "./panel";
 import { WATCHED_CHANNEL_NAMES, parseChunk, parseHookChunk } from "./parser";
 import { OfficeState } from "./officeState";
@@ -133,40 +134,70 @@ function captureRaw(
 /** Byte offset already consumed per watched activity file, so we only read appends. */
 const hookOffsets = new Map<string, number>();
 
+/** How often the polling fallback re-checks each activity file for appends. */
+const HOOK_POLL_MS = 1500;
+
 /**
  * Tail `.codecubicle/activity.jsonl` files. The standalone `claude` CLI writes
  * nothing to an output channel, but hooks (configured in `.claude/settings.json`)
  * append their payloads here; see `parser.ts` for the format. Each appended line
  * is parsed and fed through the same `OfficeState` pipeline as channel output.
+ *
+ * Delivery uses TWO mechanisms because VS Code's `FileSystemWatcher` is
+ * unreliable for files appended by an external process (notably on Windows): it
+ * often fires right after startup and then goes quiet. So we also **poll** each
+ * workspace's activity file on an interval, like `tail -f`. `readNewHookLines`
+ * only ever reads bytes past the stored offset, so the watcher and the poller
+ * can both fire for the same append without double-counting.
  */
 function subscribeToHookCapture(context: vscode.ExtensionContext): void {
+  // Prime offsets for files that already exist, so startup skips the historical
+  // backlog (no replay of past sessions) AND the first new append is still read
+  // — the old lazy "first sight" skip swallowed that first append.
+  for (const file of hookFilePaths()) {
+    try {
+      hookOffsets.set(file, fs.statSync(file).size);
+    } catch {
+      /* not created yet — will be read from the start once it appears */
+    }
+  }
+
   const watcher = vscode.workspace.createFileSystemWatcher(
     "**/.codecubicle/activity.jsonl"
   );
-  const onTouch = (uri: vscode.Uri): void => readNewHookLines(uri.fsPath);
-  watcher.onDidCreate(onTouch);
-  watcher.onDidChange(onTouch);
+  watcher.onDidChange((uri) => readNewHookLines(uri.fsPath));
+  // A freshly created file is all-new activity — read it from the start.
+  watcher.onDidCreate((uri) => {
+    hookOffsets.set(uri.fsPath, 0);
+    readNewHookLines(uri.fsPath);
+  });
   watcher.onDidDelete((uri) => hookOffsets.delete(uri.fsPath));
   context.subscriptions.push(watcher);
+
+  const timer = setInterval(() => {
+    for (const file of hookFilePaths()) readNewHookLines(file);
+  }, HOOK_POLL_MS);
+  context.subscriptions.push({ dispose: () => clearInterval(timer) });
+}
+
+/** Candidate `<workspace>/.codecubicle/activity.jsonl` paths to tail. */
+function hookFilePaths(): string[] {
+  return (vscode.workspace.workspaceFolders ?? []).map((folder) =>
+    path.join(folder.uri.fsPath, ".codecubicle", "activity.jsonl")
+  );
 }
 
 /**
  * Read bytes appended to `file` since we last looked and apply any complete
- * lines. On first sight we skip the existing backlog (start at end-of-file) so
- * a fresh office shows only new activity, not a replay of past sessions.
+ * lines. An unseen file is read from the start (offset 0); existing files are
+ * primed at startup so their backlog is skipped (see `subscribeToHookCapture`).
  */
 function readNewHookLines(file: string): void {
   let size: number;
   try {
     size = fs.statSync(file).size;
   } catch {
-    return; // file vanished between the event and the read
-  }
-
-  // First time we see this file: jump to its end, don't replay history.
-  if (!hookOffsets.has(file)) {
-    hookOffsets.set(file, size);
-    return;
+    return; // file vanished or not created yet
   }
 
   const prev = hookOffsets.get(file) ?? 0;

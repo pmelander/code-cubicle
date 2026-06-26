@@ -310,6 +310,18 @@ const H = {
     tool_input: { command: "npm test" },
     tool_use_id: "toolu_2",
   },
+  mainRead: {
+    hook_event_name: "PreToolUse",
+    tool_name: "Read",
+    tool_input: { file_path: "x.ts" },
+    tool_use_id: "toolu_r",
+  },
+  mainGrep: {
+    hook_event_name: "PreToolUse",
+    tool_name: "Grep",
+    tool_input: { pattern: "foo" },
+    tool_use_id: "toolu_g",
+  },
   mainEditDone: {
     hook_event_name: "PostToolUse",
     tool_name: "Edit",
@@ -348,6 +360,7 @@ const H = {
     last_assistant_message: "done",
   },
   stop: { hook_event_name: "Stop" },
+  sessionEnd: { hook_event_name: "SessionEnd" },
   notification: { hook_event_name: "Notification", message: "idle" },
 };
 
@@ -360,12 +373,26 @@ describe("parseHookPayload (Claude Code hooks)", () => {
     });
   });
 
-  it("treats the main agent's non-shell tool as its own work (typing)", () => {
+  it("routes the main agent's edits to the coder desk (typing)", () => {
     expect(parseHookPayload(H.mainEdit)).toMatchObject({
       action: "working",
       name: "Agent",
       role: "main",
       detail: "Edit",
+    });
+  });
+
+  it("routes the main agent's reads/searches to the Reader desk (thinking)", () => {
+    expect(parseHookPayload(H.mainRead)).toMatchObject({
+      action: "tool_call",
+      name: "Reader",
+      role: "subagent",
+      detail: "Read",
+    });
+    expect(parseHookPayload(H.mainGrep)).toMatchObject({
+      action: "tool_call",
+      name: "Reader",
+      detail: "Grep",
     });
   });
 
@@ -378,20 +405,19 @@ describe("parseHookPayload (Claude Code hooks)", () => {
     });
   });
 
-  it("attributes a subagent's tool call to ITS OWN desk via agent_type", () => {
+  it("keeps a subagent as one coherent worker at its own desk for every tool", () => {
+    // Read → thinking, Bash → thinking, all on the subagent's own desk (not spread).
     expect(parseHookPayload(H.subagentRead)).toMatchObject({
-      action: "working",
+      action: "tool_call",
       name: "Explore",
       role: "subagent",
       detail: "Read",
     });
-  });
-
-  it("keeps shell tools on the Terminal desk even for a subagent", () => {
     expect(parseHookPayload(H.subagentBash)).toMatchObject({
       action: "tool_call",
-      name: "Terminal",
+      name: "Explore",
       role: "subagent",
+      detail: "Bash",
     });
   });
 
@@ -426,8 +452,12 @@ describe("parseHookPayload (Claude Code hooks)", () => {
     });
   });
 
-  it("ends the main Agent turn on Stop", () => {
-    expect(parseHookPayload(H.stop)).toMatchObject({
+  it("ignores Stop (per-turn) so the agent does not walk out between turns", () => {
+    expect(parseHookPayload(H.stop)).toBeNull();
+  });
+
+  it("retires the main Agent on SessionEnd (the real farewell)", () => {
+    expect(parseHookPayload(H.sessionEnd)).toMatchObject({
       action: "done",
       name: "Agent",
       role: "main",
@@ -487,8 +517,43 @@ describe("parseHookChunk", () => {
     expect(events.map((e) => `${e.name}:${e.action}`)).toEqual([
       "Agent:spawn",
       "Explore:spawn",
-      "Explore:working",
+      "Explore:tool_call", // subagent Read → thinking on its own desk
       "Explore:done",
     ]);
+  });
+});
+
+describe("activity kind tagging", () => {
+  it("tags hook tool events by category (edit/read/search/shell)", () => {
+    expect(parseHookPayload(H.mainEdit)?.activity).toBe("edit");
+    expect(parseHookPayload(H.mainRead)?.activity).toBe("read");
+    expect(parseHookPayload(H.mainGrep)?.activity).toBe("search");
+    expect(parseHookPayload(H.mainBash)?.activity).toBe("shell");
+    expect(parseHookPayload(H.subagentRead)?.activity).toBe("read");
+  });
+
+  it("tags web tools and defaults unknown tools to think", () => {
+    expect(parseHookPayload({ hook_event_name: "PreToolUse", tool_name: "WebFetch" })?.activity).toBe("web");
+    expect(parseHookPayload({ hook_event_name: "PreToolUse", tool_name: "AskUserQuestion" })?.activity).toBe("think");
+  });
+
+  it("carries the activity through PostToolUse", () => {
+    expect(parseHookPayload(H.mainEditDone)?.activity).toBe("edit");
+  });
+
+  it("tags Terminal-channel commands as shell", () => {
+    expect(parseLine(L.termRun)?.activity).toBe("shell");
+    expect(parseLine(L.termDoneOk)?.activity).toBe("shell");
+  });
+
+  it("tags Claude [Stall] tools by category", () => {
+    expect(parseLine(L.claudeGrepStart)?.activity).toBe("search");
+    expect(parseLine(L.claudeBashStart)?.activity).toBe("shell");
+    expect(parseLine(L.claudeEditStart)?.activity).toBe("edit");
+  });
+
+  it("leaves lifecycle events untagged (animation drives the icon)", () => {
+    expect(parseHookPayload(H.sessionStart)?.activity).toBeUndefined();
+    expect(parseHookPayload(H.subagentStart)?.activity).toBeUndefined();
   });
 });

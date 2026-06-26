@@ -3,7 +3,7 @@
     "SessionStart": [
       { "hooks": [{ "type": "command", "command": "node .codecubicle/capture.cjs" }] }
     ],
-    "Stop": [
+    "SessionEnd": [
       { "hooks": [{ "type": "command", "command": "node .codecubicle/capture.cjs" }] }
     ],
     "SubagentStart": [

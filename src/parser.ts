@@ -1,4 +1,4 @@
-import type { AgentEvent, AgentRole } from "./types";
+import type { ActivityKind, AgentEvent, AgentRole } from "./types";
 
 /**
  * Parses raw Copilot output channel text into structured AgentEvents.
@@ -175,7 +175,7 @@ function classifyClaudeSource(source: string): { name: string; role: AgentRole }
   return { name: AGENT_NAME, role: "main" }; // source=sdk
 }
 
-function event(c: Classification, detail: string): AgentEvent {
+function event(c: Classification, detail: string, activity?: ActivityKind): AgentEvent {
   return {
     id: makeId(),
     name: c.name,
@@ -183,7 +183,22 @@ function event(c: Classification, detail: string): AgentEvent {
     action: c.action,
     timestamp: Date.now(),
     detail,
+    activity,
   };
+}
+
+/**
+ * Map a tool name to its semantic activity kind, for the renderer's bubble glyph.
+ * Independent of desk routing (which collapses read+search) — this keeps them
+ * distinct so a search looks different from a file read.
+ */
+function toolActivity(tool: string): ActivityKind {
+  if (/^(Edit|Write|MultiEdit|NotebookEdit)$/i.test(tool)) return "edit";
+  if (/^(Read|NotebookRead)$/i.test(tool)) return "read";
+  if (/^(Grep|Glob|LS)$/i.test(tool)) return "search";
+  if (SHELL_TOOL_PATTERN.test(tool)) return "shell";
+  if (/^(WebFetch|WebSearch)$/i.test(tool)) return "web";
+  return "think";
 }
 
 /**
@@ -219,7 +234,8 @@ export function parseLine(line: string): AgentEvent | null {
   if (runMatch) {
     return event(
       { name: TERMINAL_NAME, role: "subagent", action: "tool_call" },
-      cleanTerminalCommand(runMatch[1])
+      cleanTerminalCommand(runMatch[1]),
+      "shell"
     );
   }
 
@@ -230,7 +246,8 @@ export function parseLine(line: string): AgentEvent | null {
     const ok = exitCode === "0" && /^undefined$/i.test(error.trim());
     return event(
       { name: TERMINAL_NAME, role: "subagent", action: "working" },
-      ok ? "✓ exit 0" : `✗ exit ${exitCode}`
+      ok ? "✓ exit 0" : `✗ exit ${exitCode}`,
+      "shell"
     );
   }
 
@@ -268,7 +285,7 @@ export function parseLine(line: string): AgentEvent | null {
     const tool = claudeStart[1];
     const worker = claudeWorkerForTool(tool);
     const action = worker.name === AGENT_NAME ? "working" : "tool_call";
-    return event({ ...worker, action }, tool);
+    return event({ ...worker, action }, tool, toolActivity(tool));
   }
 
   // A tool finished -> keep the worker active; note success/failure.
@@ -277,7 +294,7 @@ export function parseLine(line: string): AgentEvent | null {
     const [, tool, outcome] = claudeEnd;
     const worker = claudeWorkerForTool(tool);
     const ok = /^ok$/i.test(outcome);
-    return event({ ...worker, action: "working" }, ok ? `✓ ${tool}` : `✗ ${tool}`);
+    return event({ ...worker, action: "working" }, ok ? `✓ ${tool}` : `✗ ${tool}`, toolActivity(tool));
   }
 
   // --- Copilot Chat channel: model-request markers ---
@@ -291,7 +308,8 @@ export function parseLine(line: string): AgentEvent | null {
   const doneMatch = trimmed.match(REQUEST_DONE_PATTERN);
   if (doneMatch) {
     const [, model, endpoint] = doneMatch;
-    return event(classifyEndpoint(endpoint), model.trim());
+    const activity: ActivityKind = /editAgent/i.test(endpoint) ? "edit" : "think";
+    return event(classifyEndpoint(endpoint), model.trim(), activity);
   }
 
   // A request is being prepared -> the main agent starts working (turn start).
@@ -355,18 +373,40 @@ export interface ClaudeHookPayload {
   agent_type?: string;
 }
 
+/** Main agent's read/search tools → the Reader desk (thinking). Edits and any
+ * other tool fall through to the coder (Agent) desk. */
+const READ_TOOL_PATTERN = /^(Read|Grep|Glob|LS|NotebookRead)$/i;
+/** Desk for the main agent's read/search work (internal key; the pill shows the desk's character). */
+const READER_NAME = "Reader";
+
+interface HookActivity {
+  name: string;
+  role: AgentRole;
+  action: AgentEvent["action"];
+}
+
 /**
- * Pick the desk for a hook tool event. Shell tools keep the iconic Terminal
- * desk regardless of who ran them; otherwise a subagent's work goes to its own
- * desk (keyed by `agent_type`) and the main agent's to the Agent desk.
+ * Map a hook tool event to a desk + animation. Two rules:
+ *  - A **subagent** (`agent_type` present) stays one coherent worker at its own
+ *    desk, keyed by `agent_type`, whatever tools it runs.
+ *  - The **main agent's** work is spread across role-desks by tool category, so a
+ *    solo terminal session lights up the office instead of collapsing onto one
+ *    desk: edits → the coder (Agent, typing); reads/searches → the Reader desk
+ *    (thinking); shell → the iconic Terminal desk (thinking); anything else →
+ *    the coder.
  */
-function hookWorkerForTool(
-  tool: string,
-  agentType?: string
-): { name: string; role: AgentRole } {
-  if (SHELL_TOOL_PATTERN.test(tool)) return { name: TERMINAL_NAME, role: "subagent" };
-  if (agentType) return { name: agentType, role: "subagent" };
-  return { name: AGENT_NAME, role: "main" };
+function hookActivityForTool(tool: string, agentType?: string): HookActivity {
+  const exploring = SHELL_TOOL_PATTERN.test(tool) || READ_TOOL_PATTERN.test(tool);
+
+  // A subagent stays one worker at its own desk, regardless of tool type.
+  if (agentType) {
+    return { name: agentType, role: "subagent", action: exploring ? "tool_call" : "working" };
+  }
+
+  // Main agent: spread across role-desks by category.
+  if (SHELL_TOOL_PATTERN.test(tool)) return { name: TERMINAL_NAME, role: "subagent", action: "tool_call" };
+  if (READ_TOOL_PATTERN.test(tool)) return { name: READER_NAME, role: "subagent", action: "tool_call" };
+  return { name: AGENT_NAME, role: "main", action: "working" }; // edits + everything else → the coder
 }
 
 /**
@@ -390,7 +430,14 @@ export function parseHookPayload(payload: ClaudeHookPayload): AgentEvent | null 
     case "SessionStart":
       return event({ name: AGENT_NAME, role: "main", action: "spawn" }, "starting Claude");
 
+    // `Stop` fires at the END OF EVERY TURN, not session end — mapping it to
+    // `done` made the agent celebrate and walk out after each response, leaving
+    // the office empty between turns. Ignore it; the idle-removal timer retires
+    // the agent after real inactivity, and `SessionEnd` is the true farewell.
     case "Stop":
+      return null;
+
+    case "SessionEnd":
       return event({ name: AGENT_NAME, role: "main", action: "done" }, "session ended");
 
     case "SubagentStart": {
@@ -408,18 +455,15 @@ export function parseHookPayload(payload: ClaudeHookPayload): AgentEvent | null 
     case "PreToolUse": {
       const tool = payload.tool_name;
       if (!tool) return null;
-      const worker = hookWorkerForTool(tool, payload.agent_type);
-      // Shell commands show a thinking bubble; an agent's own tools = typing.
-      const action = SHELL_TOOL_PATTERN.test(tool) ? "tool_call" : "working";
-      return event({ ...worker, action }, tool);
+      return event(hookActivityForTool(tool, payload.agent_type), tool, toolActivity(tool));
     }
 
     case "PostToolUse": {
       const tool = payload.tool_name;
       if (!tool) return null;
-      const worker = hookWorkerForTool(tool, payload.agent_type);
+      const { name, role } = hookActivityForTool(tool, payload.agent_type);
       const ok = !hookToolErrored(payload.tool_response);
-      return event({ ...worker, action: "working" }, ok ? `✓ ${tool}` : `✗ ${tool}`);
+      return event({ name, role, action: "working" }, ok ? `✓ ${tool}` : `✗ ${tool}`, toolActivity(tool));
     }
 
     default:

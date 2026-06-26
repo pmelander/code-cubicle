@@ -81,6 +81,9 @@ export class OfficeState {
     if (existing) {
       existing.animation = animation;
       existing.role = event.role;
+      // Keep the last known activity if this event doesn't carry one (e.g. a
+      // spawn or an attribution-only request), so the bubble glyph is stable.
+      if (event.activity) existing.activity = event.activity;
     } else {
       const station = this.firstFreeStation();
       if (station < 0) return; // office is full — ignore extra agents
@@ -90,6 +93,7 @@ export class OfficeState {
         role: event.role,
         animation,
         station,
+        activity: event.activity,
       });
     }
     this.scheduleRemoval(event.name);

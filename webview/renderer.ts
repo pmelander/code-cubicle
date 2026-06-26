@@ -20,12 +20,14 @@ import {
 // Keep in sync with src/types.ts.
 type AgentRole = "main" | "subagent";
 type WorkerAnimation = "idle" | "typing" | "thinking" | "talking" | "walking" | "celebrating";
+type ActivityKind = "edit" | "read" | "search" | "shell" | "web" | "think";
 
 interface WorkerState {
   id: string;
   name: string;
   role: AgentRole;
   animation: WorkerAnimation;
+  activity?: ActivityKind;
   station: number;
 }
 
@@ -584,51 +586,106 @@ function drawActivityBubble(worker: WorkerState, cx: number, cy: number): void {
   // Little tail
   ctx.fillRect(cx - 1, by, 3, 2);
 
-  // Icon depends on animation
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   const iconY = by - h / 2;
 
-  switch (worker.animation) {
-    case "typing": {
-      // Animated typing dots
-      const dots = (Math.floor(frameCount / 2) % 3) + 1;
-      ctx.fillStyle = "#3b82f6";
-      for (let d = 0; d < 3; d++) {
-        ctx.fillStyle = d < dots ? "#3b82f6" : "#c7d2e8";
-        ctx.fillRect(cx - 5 + d * 4, iconY - 1, 2, 2);
-      }
-      break;
+  // Lifecycle poses keep an animation-driven icon — they override the activity.
+  if (worker.animation === "walking") {
+    // Gear-ish dots (busy / walking in)
+    ctx.fillStyle = "#22c55e";
+    ctx.fillRect(cx - 3, iconY - 3, 2, 2);
+    ctx.fillRect(cx + 1, iconY - 3, 2, 2);
+    ctx.fillRect(cx - 1, iconY, 2, 2);
+    return;
+  }
+  if (worker.animation === "celebrating") {
+    // Checkmark
+    ctx.fillStyle = "#22c55e";
+    ctx.fillRect(cx - 3, iconY, 2, 2);
+    ctx.fillRect(cx - 1, iconY + 2, 2, 2);
+    ctx.fillRect(cx + 1, iconY - 2, 2, 2);
+    ctx.fillRect(cx + 3, iconY - 4, 2, 2);
+    return;
+  }
+  if (worker.animation === "idle") {
+    drawTextOutlined("Zzz", cx, iconY + 3, "#94a3b8", "7px monospace");
+    return;
+  }
+
+  // Active (typing/thinking/talking): show WHAT the worker is doing. Falls back
+  // to an animation-based icon when the activity kind is unknown.
+  switch (worker.activity) {
+    case "edit": {
+      // Pencil: dark tip (bottom-left) → orange body diagonal up-right
+      ctx.fillStyle = "#475569";
+      ctx.fillRect(cx - 4, iconY + 2, 2, 2);
+      ctx.fillStyle = "#f59e0b";
+      ctx.fillRect(cx - 2, iconY, 2, 2);
+      ctx.fillRect(cx, iconY - 2, 2, 2);
+      ctx.fillRect(cx + 2, iconY - 4, 2, 2);
+      return;
     }
-    case "thinking":
-    case "talking": {
+    case "read": {
+      // Lines of text on a page
+      ctx.fillStyle = "#3b82f6";
+      ctx.fillRect(cx - 4, iconY - 3, 8, 1);
+      ctx.fillStyle = "#64748b";
+      ctx.fillRect(cx - 4, iconY - 1, 8, 1);
+      ctx.fillRect(cx - 4, iconY + 1, 8, 1);
+      ctx.fillRect(cx - 4, iconY + 3, 5, 1);
+      return;
+    }
+    case "search": {
+      // Magnifying glass: hollow ring + handle
+      ctx.fillStyle = "#0ea5e9";
+      ctx.fillRect(cx - 4, iconY - 4, 5, 1);
+      ctx.fillRect(cx - 4, iconY, 5, 1);
+      ctx.fillRect(cx - 4, iconY - 3, 1, 3);
+      ctx.fillRect(cx, iconY - 3, 1, 3);
+      ctx.fillRect(cx + 1, iconY + 1, 2, 2);
+      ctx.fillRect(cx + 3, iconY + 3, 2, 2);
+      return;
+    }
+    case "shell": {
+      // Terminal prompt
+      drawTextOutlined(">_", cx, iconY + 3, "#22c55e", "8px monospace");
+      return;
+    }
+    case "web": {
+      // Globe: ring + equator + meridian
+      ctx.fillStyle = "#10b981";
+      ctx.fillRect(cx - 3, iconY - 3, 6, 1);
+      ctx.fillRect(cx - 3, iconY + 2, 6, 1);
+      ctx.fillRect(cx - 3, iconY - 2, 1, 4);
+      ctx.fillRect(cx + 2, iconY - 2, 1, 4);
+      ctx.fillRect(cx - 3, iconY, 6, 1);
+      ctx.fillRect(cx - 1, iconY - 2, 1, 4);
+      return;
+    }
+    case "think": {
       // Lightbulb
       ctx.fillStyle = "#fbbf24";
       ctx.fillRect(cx - 2, by - h + 2, 4, 4);
       ctx.fillStyle = "#92600a";
       ctx.fillRect(cx - 1, by - h + 6, 2, 2);
-      break;
-    }
-    case "walking": {
-      // Gear-ish dots (busy)
-      ctx.fillStyle = "#22c55e";
-      ctx.fillRect(cx - 3, iconY - 3, 2, 2);
-      ctx.fillRect(cx + 1, iconY - 3, 2, 2);
-      ctx.fillRect(cx - 1, iconY, 2, 2);
-      break;
-    }
-    case "celebrating": {
-      // Checkmark
-      ctx.fillStyle = "#22c55e";
-      ctx.fillRect(cx - 3, iconY, 2, 2);
-      ctx.fillRect(cx - 1, iconY + 2, 2, 2);
-      ctx.fillRect(cx + 1, iconY - 2, 2, 2);
-      ctx.fillRect(cx + 3, iconY - 4, 2, 2);
-      break;
+      return;
     }
     default: {
-      // Idle "Zzz"
-      drawTextOutlined("Zzz", cx, iconY + 3, "#94a3b8", "7px monospace");
+      if (worker.animation === "typing") {
+        // Animated typing dots
+        const dots = (Math.floor(frameCount / 2) % 3) + 1;
+        for (let d = 0; d < 3; d++) {
+          ctx.fillStyle = d < dots ? "#3b82f6" : "#c7d2e8";
+          ctx.fillRect(cx - 5 + d * 4, iconY - 1, 2, 2);
+        }
+        return;
+      }
+      // Lightbulb (generic thinking)
+      ctx.fillStyle = "#fbbf24";
+      ctx.fillRect(cx - 2, by - h + 2, 4, 4);
+      ctx.fillStyle = "#92600a";
+      ctx.fillRect(cx - 1, by - h + 6, 2, 2);
     }
   }
 }

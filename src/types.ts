@@ -7,6 +7,14 @@
 
 export type AgentRole = "main" | "subagent";
 
+/**
+ * Semantic kind of work, used to pick the activity bubble glyph in the renderer
+ * (independent of `WorkerAnimation`, which is the body pose). Derived from the
+ * tool in `parser.ts`. Absent when the activity is unknown (the renderer then
+ * falls back to an animation-based icon).
+ */
+export type ActivityKind = "edit" | "read" | "search" | "shell" | "web" | "think";
+
 export interface AgentEvent {
   id: string;
   role: AgentRole;
@@ -14,6 +22,7 @@ export interface AgentEvent {
   action: "spawn" | "working" | "tool_call" | "idle" | "done";
   timestamp: number;
   detail?: string;
+  activity?: ActivityKind;
 }
 
 // --- Worker visual state ---
@@ -31,6 +40,8 @@ export interface WorkerState {
   name: string;
   role: AgentRole;
   animation: WorkerAnimation;
+  /** Latest activity kind, for the bubble glyph. Undefined ⟹ animation-based icon. */
+  activity?: ActivityKind;
   /**
    * Workstation index (0-based). The webview renderer owns the office layout
    * and maps this to on-screen coordinates, so the extension never needs to
