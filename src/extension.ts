@@ -1,9 +1,11 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import { CubiclePanel } from "./panel";
 import { WATCHED_CHANNEL_NAMES, parseChunk, parseHookChunk } from "./parser";
 import { OfficeState } from "./officeState";
+import { sessionKey } from "./sessionKey";
 import type { AgentEvent } from "./types";
 
 let panel: CubiclePanel | undefined;
@@ -138,22 +140,22 @@ const hookOffsets = new Map<string, number>();
 const HOOK_POLL_MS = 1500;
 
 /**
- * Tail `.codecubicle/activity.jsonl` files. The standalone `claude` CLI writes
- * nothing to an output channel, but hooks (configured in `.claude/settings.json`)
- * append their payloads here; see `parser.ts` for the format. Each appended line
- * is parsed and fed through the same `OfficeState` pipeline as channel output.
+ * Tail this window's per-workspace hook-capture files. The standalone `claude`
+ * CLI writes nothing to an output channel; instead a global hook (configured
+ * once in `~/.claude/settings.json`) runs `~/.codecubicle/capture.cjs`, which
+ * routes each payload to `~/.codecubicle/sessions/<sessionKey(cwd)>.jsonl`. We
+ * tail only the file(s) whose key matches a folder open in THIS window, so
+ * multiple VS Code windows each show only their own workspace's activity.
  *
- * Delivery uses TWO mechanisms because VS Code's `FileSystemWatcher` is
- * unreliable for files appended by an external process (notably on Windows): it
- * often fires right after startup and then goes quiet. So we also **poll** each
- * workspace's activity file on an interval, like `tail -f`. `readNewHookLines`
- * only ever reads bytes past the stored offset, so the watcher and the poller
- * can both fire for the same append without double-counting.
+ * Delivery is by **polling** (`tail -f` style). The files live under the home
+ * dir, outside any workspace folder, so VS Code's workspace-scoped
+ * `FileSystemWatcher` can't see them anyway — and polling proved more reliable
+ * than the watcher for externally-appended files. `readNewHookLines` only reads
+ * bytes past the stored offset.
  */
 function subscribeToHookCapture(context: vscode.ExtensionContext): void {
   // Prime offsets for files that already exist, so startup skips the historical
-  // backlog (no replay of past sessions) AND the first new append is still read
-  // — the old lazy "first sight" skip swallowed that first append.
+  // backlog (no replay of past sessions) AND the first new append is still read.
   for (const file of hookFilePaths()) {
     try {
       hookOffsets.set(file, fs.statSync(file).size);
@@ -162,28 +164,20 @@ function subscribeToHookCapture(context: vscode.ExtensionContext): void {
     }
   }
 
-  const watcher = vscode.workspace.createFileSystemWatcher(
-    "**/.codecubicle/activity.jsonl"
-  );
-  watcher.onDidChange((uri) => readNewHookLines(uri.fsPath));
-  // A freshly created file is all-new activity — read it from the start.
-  watcher.onDidCreate((uri) => {
-    hookOffsets.set(uri.fsPath, 0);
-    readNewHookLines(uri.fsPath);
-  });
-  watcher.onDidDelete((uri) => hookOffsets.delete(uri.fsPath));
-  context.subscriptions.push(watcher);
-
   const timer = setInterval(() => {
     for (const file of hookFilePaths()) readNewHookLines(file);
   }, HOOK_POLL_MS);
   context.subscriptions.push({ dispose: () => clearInterval(timer) });
 }
 
-/** Candidate `<workspace>/.codecubicle/activity.jsonl` paths to tail. */
+/**
+ * The central per-workspace activity files this window should tail — one per
+ * open workspace folder, keyed identically to `capture.cjs` (see `sessionKey`).
+ */
 function hookFilePaths(): string[] {
+  const sessionsDir = path.join(os.homedir(), ".codecubicle", "sessions");
   return (vscode.workspace.workspaceFolders ?? []).map((folder) =>
-    path.join(folder.uri.fsPath, ".codecubicle", "activity.jsonl")
+    path.join(sessionsDir, `${sessionKey(folder.uri.fsPath)}.jsonl`)
   );
 }
 

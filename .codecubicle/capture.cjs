@@ -1,35 +1,47 @@
 #!/usr/bin/env node
-// CodeCubicle hook capture — VERIFICATION SCAFFOLD.
+// CodeCubicle hook capture (GLOBAL). Configured once in ~/.claude/settings.json,
+// installed at ~/.codecubicle/capture.cjs. Routes each Claude Code hook payload
+// to a PER-WORKSPACE file keyed by the session's cwd:
 //
-// Reads a Claude Code hook payload (JSON on stdin) and appends it as one line
-// to .codecubicle/activity.jsonl, stamped with when we received it. This is the
-// terminal-mode CLI complement to the output-channel parsing in src/parser.ts:
-// the standalone `claude` CLI writes nothing to the VS Code output window, but
-// it does fire hooks, and hook payloads carry proper agent/subagent attribution.
+//     ~/.codecubicle/sessions/<sessionKey(cwd)>.jsonl
 //
-// The output path is resolved relative to THIS script (__dirname), so it does
-// not matter what working directory the hook runs in. CommonJS (.cjs) so it runs
-// regardless of the repo's package.json "type".
+// so every VS Code window's office shows only the activity from sessions whose
+// cwd matches one of that window's workspace folders. The extension tails the
+// same file (src/extension.ts → hookFilePaths).
+//
+// ⚠️ sessionKey() below MUST stay in sync with src/sessionKey.ts.
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
+
+function sessionKey(p) {
+  return String(p)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
 
 let raw = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => (raw += chunk));
 process.stdin.on("end", () => {
-  const outFile = path.join(__dirname, "activity.jsonl");
-  let record;
+  let payload;
   try {
-    record = { receivedAt: new Date().toISOString(), payload: JSON.parse(raw) };
+    payload = JSON.parse(raw);
   } catch {
-    // Keep malformed/unexpected input verbatim so we can see what arrived.
-    record = { receivedAt: new Date().toISOString(), raw: raw.trim() };
+    process.exit(0); // not JSON — nothing to route
   }
+  const cwd = payload && payload.cwd;
+  if (!cwd) process.exit(0); // no workspace to attribute it to
+
+  const dir = path.join(os.homedir(), ".codecubicle", "sessions");
+  const file = path.join(dir, sessionKey(cwd) + ".jsonl");
+  const record = { receivedAt: new Date().toISOString(), payload };
   try {
-    fs.appendFileSync(outFile, JSON.stringify(record) + "\n");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.appendFileSync(file, JSON.stringify(record) + "\n");
   } catch {
-    // Never let a capture failure interfere with the agent.
+    // Never let a capture failure disturb the agent.
   }
-  // Exit clean and silent — hooks may parse stdout as JSON.
-  process.exit(0);
+  process.exit(0); // exit clean and silent — hooks may parse stdout as JSON
 });
