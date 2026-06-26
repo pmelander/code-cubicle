@@ -2,7 +2,7 @@
   "name": "code-cubicle",
   "displayName": "CodeCubicle",
   "description": "Visualizes GitHub Copilot agent and subagent activity as pixel art office workers in a tiny animated office.",
-  "version": "0.6.0",
+  "version": "0.7.2",
   "publisher": "code-cubicle",
   "license": "MIT",
   "repository": {

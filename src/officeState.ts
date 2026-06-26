@@ -11,7 +11,7 @@ import type { AgentEvent, WorkerAnimation, WorkerState } from "./types";
 /** Number of available workstations (matches the renderer's office layout). */
 export const MAX_STATIONS = 4;
 /** After this much inactivity, a worker leaves the office entirely. */
-export const REMOVE_AFTER_IDLE_MS = 30_000;
+export const REMOVE_AFTER_IDLE_MS = 60_000;
 /** How long a "done" worker celebrates before leaving. */
 export const CELEBRATE_MS = 3_000;
 

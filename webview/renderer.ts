@@ -82,6 +82,52 @@ const FRAME_INTERVAL = 1000 / TARGET_FPS;
 let frameCount = 0;
 let lastFrameTime = 0;
 
+// Empty-office banner: an in-world line picked at random when the office empties
+// and gently rotated while it stays empty (held steady between picks so it never
+// flickers). Kept short + ASCII to fit the 7px line and render reliably.
+const EMPTY_MESSAGES = [
+  "The office is quiet... too quiet.",
+  "All quiet on the cubicle front.",
+  "Not a keystroke to be heard.",
+  "Everyone's out for coffee.",
+  "The break room is busy right now.",
+  "Zzz... the office is napping.",
+  "Chairs spinning, nobody in them.",
+];
+/** ~8s between rotations at TARGET_FPS. */
+const EMPTY_MESSAGE_FRAMES = TARGET_FPS * 8;
+let emptyMessage = EMPTY_MESSAGES[0];
+let emptyMessagePickedAt = -1; // frameCount of last pick; -1 ⟹ re-pick on next empty
+
+// The streaker: a cute SFW pixel character (SuperRetroWorld pack, "nude" sprite,
+// 48×80 = 3 frames × 4 directions of 16×20) who occasionally dashes across the
+// EMPTY office for a laugh. Standalone of the worker system. RPGMaker row order
+// is Down/Left/Right/Up — if he moonwalks, swap STREAKER_ROW_LEFT/RIGHT.
+const STREAKER_SHEET = "streaker.png";
+const STREAKER_FW = 16; // source frame size
+const STREAKER_FH = 20;
+const STREAKER_SCALE = 1.5; // drawn 50% larger than native so he's easy to spot
+const STREAKER_DW = Math.round(STREAKER_FW * STREAKER_SCALE); // on-screen width
+const STREAKER_DH = Math.round(STREAKER_FH * STREAKER_SCALE); // on-screen height
+const STREAKER_ROW_LEFT = 1;
+const STREAKER_ROW_RIGHT = 2;
+const STREAKER_SPEED = 4; // logical px/frame — a brisk jog, not a blur
+let streakerActive = false;
+let streakerX = 0;
+let streakerDir = 1; // +1 → running right, -1 → running left
+let streakerNextAt = -1; // frameCount at which the next dash may start; -1 ⟹ unscheduled
+
+/** A random delay in frames (seconds × FPS) within [minS, maxS]. */
+function randDelayFrames(minS: number, maxS: number): number {
+  return Math.floor((minS + Math.random() * (maxS - minS)) * TARGET_FPS);
+}
+
+/** Pixel offsets of a radius-3 ring (the magnifier lens), relative to its center. */
+const LENS_RING: Array<[number, number]> = [
+  [-1, -3], [0, -3], [1, -3], [-2, -2], [2, -2], [-3, -1], [3, -1],
+  [-3, 0], [3, 0], [-3, 1], [3, 1], [-2, 2], [2, 2], [-1, 3], [0, 3], [1, 3],
+];
+
 /** Animated view of the office, keyed by station. */
 const renderWorkers: Map<number, RenderWorker> = new Map();
 
@@ -187,6 +233,8 @@ function preloadSprites(): void {
       loadSprite(anim.sheet);
     }
   }
+  // ...the occasional empty-office streaker...
+  loadSprite(STREAKER_SHEET);
   // ...plus the interiors atlas (windows, chairs, plants).
   loadSprite(INTERIOR_SHEET);
   // ...and the wall logo poster.
@@ -617,13 +665,26 @@ function drawActivityBubble(worker: WorkerState, cx: number, cy: number): void {
   // to an animation-based icon when the activity kind is unknown.
   switch (worker.activity) {
     case "edit": {
-      // Pencil: dark tip (bottom-left) → orange body diagonal up-right
-      ctx.fillStyle = "#475569";
-      ctx.fillRect(cx - 4, iconY + 2, 2, 2);
-      ctx.fillStyle = "#f59e0b";
-      ctx.fillRect(cx - 2, iconY, 2, 2);
-      ctx.fillRect(cx, iconY - 2, 2, 2);
-      ctx.fillRect(cx + 2, iconY - 4, 2, 2);
+      // </> code tags. The right chevron is shifted +1 so there's a 1px gap
+      // after the slash (keeps the glyph from reading as a solid blob).
+      ctx.fillStyle = "#38bdf8";
+      // left chevron <
+      ctx.fillRect(cx - 5, iconY, 1, 1);
+      ctx.fillRect(cx - 4, iconY - 1, 1, 1);
+      ctx.fillRect(cx - 4, iconY + 1, 1, 1);
+      ctx.fillRect(cx - 3, iconY - 2, 1, 1);
+      ctx.fillRect(cx - 3, iconY + 2, 1, 1);
+      // right chevron >
+      ctx.fillRect(cx + 5, iconY, 1, 1);
+      ctx.fillRect(cx + 4, iconY - 1, 1, 1);
+      ctx.fillRect(cx + 4, iconY + 1, 1, 1);
+      ctx.fillRect(cx + 3, iconY - 2, 1, 1);
+      ctx.fillRect(cx + 3, iconY + 2, 1, 1);
+      // slash /
+      ctx.fillStyle = "#22c55e";
+      ctx.fillRect(cx - 1, iconY + 2, 1, 1);
+      ctx.fillRect(cx, iconY, 1, 1);
+      ctx.fillRect(cx + 1, iconY - 2, 1, 1);
       return;
     }
     case "read": {
@@ -637,14 +698,13 @@ function drawActivityBubble(worker: WorkerState, cx: number, cy: number): void {
       return;
     }
     case "search": {
-      // Magnifying glass: hollow ring + handle
-      ctx.fillStyle = "#0ea5e9";
-      ctx.fillRect(cx - 4, iconY - 4, 5, 1);
-      ctx.fillRect(cx - 4, iconY, 5, 1);
-      ctx.fillRect(cx - 4, iconY - 3, 1, 3);
-      ctx.fillRect(cx, iconY - 3, 1, 3);
-      ctx.fillRect(cx + 1, iconY + 1, 2, 2);
-      ctx.fillRect(cx + 3, iconY + 3, 2, 2);
+      // Magnifying glass: round lens (radius-3 ring) + a chunky diagonal handle.
+      const ly = Math.round(iconY) - 1;
+      ctx.fillStyle = "#38bdf8";
+      for (const [dx, dy] of LENS_RING) ctx.fillRect(cx - 1 + dx, ly + dy, 1, 1);
+      ctx.fillStyle = "#0284c7";
+      ctx.fillRect(cx + 2, Math.round(iconY) + 2, 2, 2);
+      ctx.fillRect(cx + 4, Math.round(iconY) + 4, 2, 2);
       return;
     }
     case "shell": {
@@ -779,6 +839,70 @@ function advanceWorker(rw: RenderWorker): boolean {
   return true;
 }
 
+// --- Empty-office streaker ---
+
+/**
+ * Update and draw the streaker. Only runs while the office is empty: schedules
+ * an occasional dash, then animates a side-facing run clear across the screen.
+ * Resets (and re-arms a fresh cooldown) the moment a real worker shows up.
+ */
+function tickStreaker(isEmpty: boolean): void {
+  if (!isEmpty) {
+    streakerActive = false;
+    streakerNextAt = -1;
+    return;
+  }
+  // First dash a little sooner (discoverable); later ones rarer.
+  if (streakerNextAt < 0) streakerNextAt = frameCount + randDelayFrames(15, 40);
+
+  if (!streakerActive && frameCount >= streakerNextAt) {
+    streakerActive = true;
+    streakerDir = Math.random() < 0.5 ? 1 : -1;
+    streakerX = streakerDir === 1 ? -STREAKER_DW : LOGICAL_W;
+  }
+  if (!streakerActive) return;
+
+  streakerX += STREAKER_SPEED * streakerDir;
+  drawStreaker();
+
+  const offRight = streakerDir === 1 && streakerX > LOGICAL_W;
+  const offLeft = streakerDir === -1 && streakerX < -STREAKER_DW;
+  if (offRight || offLeft) {
+    streakerActive = false;
+    streakerNextAt = frameCount + randDelayFrames(45, 120); // not too often
+  }
+}
+
+function drawStreaker(): void {
+  const img = spriteCache.get(STREAKER_SHEET);
+  if (!img || !img.complete || img.naturalWidth === 0) return;
+
+  const row = streakerDir === 1 ? STREAKER_ROW_RIGHT : STREAKER_ROW_LEFT;
+  const frame = frameCount % 3; // 3-frame run cycle
+  const x = Math.round(streakerX);
+  const y = WORKER_BASELINE - STREAKER_DH;
+
+  // Soft shadow, matching the workers' (widened for the larger sprite).
+  ctx.fillStyle = "rgba(0,0,0,0.25)";
+  ctx.beginPath();
+  ctx.ellipse(x + STREAKER_DW / 2, WORKER_BASELINE - 1, 8, 2, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Source frame is 16×20; blit scaled to STREAKER_DW×STREAKER_DH (nearest-
+  // neighbor stays on via the global imageSmoothingEnabled = false).
+  ctx.drawImage(
+    img,
+    frame * STREAKER_FW,
+    row * STREAKER_FH,
+    STREAKER_FW,
+    STREAKER_FH,
+    x,
+    y,
+    STREAKER_DW,
+    STREAKER_DH
+  );
+}
+
 // --- Render loop ---
 
 function render(timestamp: number): void {
@@ -810,9 +934,18 @@ function render(timestamp: number): void {
     drawWorker(rw);
   }
 
-  // Status banner — shown only when the office is empty.
-  if (renderWorkers.size === 0) {
-    const msg = "Waiting for agent activity...";
+  // Empty-office bits: the occasional streaker dashes through, then the banner
+  // (drawn last so its text always stays legible on top).
+  const officeEmpty = renderWorkers.size === 0;
+  tickStreaker(officeEmpty);
+
+  // Status banner — an in-world line shown only when the office is empty.
+  if (officeEmpty) {
+    if (emptyMessagePickedAt < 0 || frameCount - emptyMessagePickedAt >= EMPTY_MESSAGE_FRAMES) {
+      emptyMessage = EMPTY_MESSAGES[Math.floor(Math.random() * EMPTY_MESSAGES.length)];
+      emptyMessagePickedAt = frameCount;
+    }
+    const msg = emptyMessage;
     ctx.font = "7px monospace";
     const w = ctx.measureText(msg).width + 12;
     const bx = (LOGICAL_W - w) / 2;
@@ -820,6 +953,8 @@ function render(timestamp: number): void {
     ctx.fillStyle = "rgba(26,26,46,0.85)";
     ctx.fillRect(bx, by, w, 11);
     drawTextOutlined(msg, LOGICAL_W / 2, by + 8, COLORS.textDim, "7px monospace");
+  } else {
+    emptyMessagePickedAt = -1; // someone's working — re-pick next time it empties
   }
 
   requestAnimationFrame(render);
